@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import { Link } from 'react-router-dom'; // Added this
 import { Upload, MapPin, Calendar, X, Layers, Crosshair } from 'lucide-react';
 import { Card } from './ui/Card';
 import { Button } from './ui/Button';
@@ -13,6 +14,7 @@ export function HeroSection({ onAnalyze, isLoading }) {
     const [isLocating, setIsLocating] = useState(false);
     const [occasion, setOccasion] = useState('Casual');
     const [material, setMaterial] = useState('');
+    const [manualOutfitType, setManualOutfitType] = useState('');
 
     const handleDrag = useCallback((e) => {
         e.preventDefault();
@@ -91,17 +93,23 @@ export function HeroSection({ onAnalyze, isLoading }) {
     const handleSubmit = (e) => {
         e.preventDefault();
         if (!file || !city) return;
-        onAnalyze({ file, city, occasion, material }); // Included material
+        onAnalyze({ file, city, occasion, material, manual_outfit_type: manualOutfitType });
+    };
+
+    // Helper to focus input
+    const focusInput = () => {
+        const input = document.querySelector('input[placeholder="Enter city or detect location"]');
+        if (input) input.focus();
     };
 
     return (
         <div className="w-full max-w-xl mx-auto space-y-8 animate-fade-in-up">
             <div className="text-center space-y-2">
-                <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">
-                    AI Outfit & Weather Assistant
+                <h1 className="text-3xl font-bold text-slate-800">
+                    Outfit Analysis
                 </h1>
-                <p className="text-slate-500 text-lg">
-                    Smart clothing recommendations using AI and real-time weather
+                <p className="text-slate-500">
+                    Upload your outfit to get AI-powered styling advice
                 </p>
             </div>
 
@@ -196,6 +204,17 @@ export function HeroSection({ onAnalyze, isLoading }) {
                                 <option value="blend">Blend / Other</option>
                             </select>
                         </div>
+                    </div>
+
+                    {/* Manual Outfit Type (Optional) */}
+                    <div className="grid grid-cols-1">
+                        <input
+                            type="text"
+                            placeholder="Manually describe outfit (e.g. 'Blue Kurta')"
+                            value={manualOutfitType} // Fixed variable name
+                            onChange={(e) => setManualOutfitType(e.target.value)}
+                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                        />
                     </div>
 
                     <Button

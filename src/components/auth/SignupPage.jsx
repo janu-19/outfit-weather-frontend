@@ -1,0 +1,86 @@
+import { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { authAPI } from '../../api';
+import { Button } from '../ui/Button';
+import { Card } from '../ui/Card';
+import { Mail, Lock, User, CheckCircle } from 'lucide-react';
+import { toast } from 'react-toastify';
+
+export function SignupPage() {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [loading, setLoading] = useState(false);
+    const navigate = useNavigate();
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        try {
+            await authAPI.register(email, password);
+            toast.success("Account created! Please log in.");
+            navigate('/login');
+        } catch (error) {
+            console.error("Registration failed", error);
+            const message = error.response?.data?.detail || "Registration failed. Try a different email.";
+            // Handle array of errors if pydantic returns multiple
+            const displayMsg = Array.isArray(message)
+                ? message.map(m => m.msg).join(', ')
+                : message;
+            toast.error(displayMsg);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="min-h-[80vh] flex items-center justify-center p-4 animate-fade-in-up">
+            <div className="w-full max-w-md space-y-8">
+                <div className="text-center">
+                    <h1 className="text-3xl font-bold text-slate-900">Create Account</h1>
+                    <p className="mt-2 text-slate-600">Start building your smart wardrobe</p>
+                </div>
+
+                <Card className="p-8">
+                    <form onSubmit={handleSubmit} className="space-y-6">
+                        <div className="space-y-4">
+                            <div className="relative">
+                                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                                <input
+                                    type="email"
+                                    required
+                                    placeholder="Email address"
+                                    value={email}
+                                    onChange={(e) => setEmail(e.target.value)}
+                                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                                />
+                            </div>
+
+                            <div className="relative">
+                                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                                <input
+                                    type="password"
+                                    required
+                                    placeholder="Choose password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                                />
+                            </div>
+                        </div>
+
+                        <Button type="submit" className="w-full" isLoading={loading}>
+                            Create Account
+                        </Button>
+                    </form>
+
+                    <div className="mt-6 text-center text-sm text-slate-500">
+                        Already have an account?{' '}
+                        <Link to="/login" className="text-blue-600 font-semibold hover:underline">
+                            Log in
+                        </Link>
+                    </div>
+                </Card>
+            </div>
+        </div>
+    );
+}
