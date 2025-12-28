@@ -19,7 +19,6 @@ export function LoginPage() {
             await authAPI.login(email, password);
             toast.success("Welcome back! 👋");
             navigate('/wardrobe');
-            window.location.reload(); // Refresh to update nav state
         } catch (error) {
             console.error("Login failed", error);
             const msg = error.response?.data?.detail || "Login failed. Check your connection or credentials.";
