@@ -1,11 +1,13 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card } from './ui/Card';
 import { AccessoriesGrid } from './AccessoriesGrid';
 import { PackingList } from './PackingList';
 import { Check, X, Thermometer, CloudRain, RotateCcw } from 'lucide-react';
 import { Button } from './ui/Button';
-import { submitFeedback, wardrobeAPI } from '../api';
+import { submitFeedback, wardrobeAPI, authAPI } from '../api';
 import { toast } from 'react-toastify';
+import { Heart, Save } from 'lucide-react';
 
 function FeedbackModal({ isOpen, onClose, onSubmit, isSubmitting, defaultCategory }) {
     if (!isOpen) return null;
@@ -79,29 +81,29 @@ function FeedbackModal({ isOpen, onClose, onSubmit, isSubmitting, defaultCategor
 export function ResultSection({ data, onReset }) {
     const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const navigate = useNavigate();
 
     if (!data) return null;
 
     const handleFeedbackSubmit = async (category, notes) => {
         setIsSubmitting(true);
         try {
-            // STRICT RULE: Use data.image_id directly. It must exist.
-            if (!data.image_id) {
-                throw new Error("Cannot verify: Original image upload record not found.");
-            }
-
+            // RELAXED RULE: Image ID is optional for guest feedback
             const response = await submitFeedback({
-                // No image_url or base64 needed, just ID
-                image_id: data.image_id,
+                // Pass ID if available, else null
+                image_id: data.image_id || null,
                 user_selected_category: category,
-                // These are helpful metadata but ID is what matters
+                // These are critical for training when we don't have an ID
                 model_predicted_category: data.outfitType,
                 confidence: data.outfitScore / 100,
+                // Add weather context if available in data
+                weather_context: data.weather || {},
                 notes: notes || ""
             });
 
             if (response && response.model_updated) {
-                toast.success("Feedback Saved! Model has learned from your image. 🧠✨");
+                toast.success("Feedback Saved! Model has learned from your input. 🧠✨");
             } else {
                 toast.success("Thanks for your feedback!");
             }
@@ -120,16 +122,12 @@ export function ResultSection({ data, onReset }) {
         if (isCorrect) {
             setIsSubmitting(true);
             try {
-                if (!data.image_id) {
-                    throw new Error("Cannot verify: Original image upload record not found.");
-                }
-
                 const response = await submitFeedback({
-                    // No image_url needed for existing ID verification ideally, but keeping strictly ID focused
-                    image_id: data.image_id,
+                    image_id: data.image_id || null,
                     user_selected_category: data.outfitType,
                     model_predicted_category: data.outfitType,
                     confidence: data.outfitScore / 100,
+                    weather_context: data.weather || {},
                     notes: "User verified as correct"
                 });
 
@@ -140,13 +138,43 @@ export function ResultSection({ data, onReset }) {
                 }
             } catch (error) {
                 console.error(error);
-                const errorMessage = error.response?.data?.detail || error.message || "Failed to submit verification.";
-                toast.error(errorMessage);
+                toast.error("Failed to verify.");
             } finally {
                 setIsSubmitting(false);
             }
         } else {
+            // Instead of just opening feedback, we ask "What would you prefer instead?"
             setIsFeedbackOpen(true);
+        }
+    };
+
+    const handleSaveToWardrobe = async () => {
+        setIsSaving(true);
+        try {
+            const outfitPayload = {
+                image_url: data.image_url,
+                category: data.outfitType,
+                occasion: data.occasion || 'Casual',
+                notes: `Saved from analysis. ${data.verdict}`,
+                color: 'Multi', // meaningful default or extracted if available
+            };
+
+            const token = authAPI.getToken();
+            if (token) {
+                // User is logged in, save directly
+                await wardrobeAPI.saveOutfit(outfitPayload);
+                toast.success("Outfit saved to your Wardrobe! 🧥✨");
+            } else {
+                // Guest mode: Save to local storage and redirect to signup
+                localStorage.setItem('pendingOutfit', JSON.stringify(outfitPayload));
+                toast.info("Create a free account to save your outfit!");
+                navigate('/signup');
+            }
+        } catch (error) {
+            console.error("Save failed:", error);
+            toast.error("Failed to save outfit.");
+        } finally {
+            setIsSaving(false);
         }
     };
 
@@ -163,6 +191,14 @@ export function ResultSection({ data, onReset }) {
             <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-slate-800">Analysis Result</h2>
                 <div className="flex gap-2">
+                    <Button
+                        onClick={handleSaveToWardrobe}
+                        isLoading={isSaving}
+                        className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-200"
+                    >
+                        <Heart className="w-4 h-4 mr-2" />
+                        Save to Wardrobe
+                    </Button>
                     <Button variant="ghost" onClick={onReset} className="text-sm">
                         <RotateCcw className="w-4 h-4 mr-2" />
                         Analyze New
@@ -259,33 +295,27 @@ export function ResultSection({ data, onReset }) {
                                 <Check className="w-4 h-4" />
                             </div>
                             <div>
-                                <p className="text-sm font-semibold text-slate-800">Is this correct?</p>
-                                <p className="text-xs text-slate-500">Verify to help AI learn.</p>
+                                <p className="text-sm font-semibold text-slate-800">Was this helpful?</p>
+                                <p className="text-xs text-slate-500">Your feedback improves recommendations.</p>
                             </div>
                         </div>
                         <div className="flex gap-2">
-                            {/* STRICT RULE: Disable IF no image_id. No auto-creation allowed. */}
-                            {!data.image_id && (
-                                <span className="text-xs text-red-500 font-medium self-center mr-2">
-                                    (Tracking ID missing - cannot verify)
-                                </span>
-                            )}
                             <Button
                                 onClick={() => handleVerification(true)}
-                                disabled={isSubmitting || !data.image_id}
-                                className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 h-8 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={!data.image_id ? "Prediction not saved in DB, cannot verify" : "Confirm Prediction"}
+                                disabled={isSubmitting}
+                                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-1 h-8 text-xs disabled:opacity-50 disabled:cursor-not-allowed border-slate-200 border"
+                                title="Confirm Prediction"
                             >
-                                Yes
+                                👍 Yes
                             </Button>
                             <Button
                                 onClick={() => handleVerification(false)}
-                                disabled={isSubmitting || !data.image_id}
+                                disabled={isSubmitting}
                                 variant="outline"
-                                className="border-red-200 text-red-600 hover:bg-red-50 px-3 py-1 h-8 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                                title={!data.image_id ? "Prediction not saved in DB, cannot verify" : "Correct Prediction"}
+                                className="border-slate-200 text-slate-600 hover:bg-slate-50 px-3 py-1 h-8 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="Report issue"
                             >
-                                No
+                                👎 No
                             </Button>
                         </div>
                     </div>

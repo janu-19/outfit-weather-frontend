@@ -4,72 +4,108 @@ import { ResultSection } from './ResultSection';
 import { analyzeOutfit, predictOutfit } from '../api';
 import { AlertCircle } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { toast } from 'react-toastify';
 
 export function PredictPage() {
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
+    const [totalUsage, setTotalUsage] = useState(() => {
+        try {
+            return parseInt(localStorage.getItem('total_usage') || '0', 10) || 0;
+        } catch (e) { return 0; }
+    });
 
     const handleAnalyze = async (data) => {
         setLoading(true);
         setError(null);
         try {
-            // 1. Get Prediction & ID (Critical for Verification)
-            // This endpoint (/predict-outfit) is the Source of Truth for the image ID.
+            // 1. Get Prediction
+            // api.predictOutfit now automatically switches between guest/auth based on token
             let predictionRes;
             try {
-                predictionRes = await predictOutfit(data.file);
-                // predictionRes = { id, predicted_class, confidence, image_url, ... }
+                predictionRes = await predictOutfit(data);
+                console.log("Prediction Response:", predictionRes); // Debug logging
             } catch (predErr) {
-                console.error("Prediction/Upload failed:", predErr);
+                console.error("Prediction failed:", predErr);
                 if (predErr.response?.status === 401) {
                     toast.error("Session expired. Please login again.");
                     return;
                 }
-                throw new Error("Failed to upload image for prediction.");
+                const errorMsg = predErr.response?.data?.detail || predErr.message || "Failed to analyze outfit.";
+                throw new Error(errorMsg);
             }
 
-            if (!predictionRes || !predictionRes.id) {
-                throw new Error("Prediction success but no ID returned from backend.");
-            }
 
-            // 2. Run Comprehensive Analysis (Weather, Fabric, etc.)
-            // We pass the class we just detected to hint the analysis
-            const analysisData = {
-                ...data,
-                manual_outfit_type: predictionRes.predicted_class // optimization
-            };
-
+            // 2. Run Comprehensive Analysis
+            // We drive the extensive analysis using the prediction result and fetching extra data (travel pack)
             let analysisRes;
             try {
-                analysisRes = await analyzeOutfit(analysisData);
+                // predictionRes is the raw data from /predict/guest (or auth)
+                // We pass it to analyzeOutfit to format it and enrich with /travel-pack data
+                analysisRes = await analyzeOutfit(predictionRes, data.city, data.manual_outfit_type);
+
             } catch (anaErr) {
-                console.warn("Analysis partial failure:", anaErr);
-                // If analysis fails (e.g. weather API down), we should still show the prediction result!
-                // We mock a basic analysis result based on prediction
+                console.warn("Secondary analysis failed/skipped.", anaErr);
+                // Fallback if analyzeOutfit fails totally (unlikely with new logic, but safe to keep)
+                const weatherObj = predictionRes.weather || predictionRes.weather_summary || {};
+                const weatherVerdict = predictionRes.weather?.verdict || predictionRes.weather_verdict || "Analysis Complete";
+
                 analysisRes = {
                     data: {
                         outfitIncluded: true,
                         outfitType: predictionRes.predicted_class,
                         outfitScore: (predictionRes.confidence || 0) * 100,
-                        weather: { temp: '--', condition: 'Unknown', breakdown: [] },
-                        verdict: "Weather data unavailable",
-                        suggestions: []
+                        weather: {
+                            temp: weatherObj.temperature || weatherObj.current_temp || '--',
+                            condition: weatherObj.description || weatherObj.condition || 'Unknown',
+                            breakdown: []
+                        },
+                        verdict: weatherVerdict,
+                        reasons: predictionRes.match_reasons || [],
+                        suggestions: predictionRes.suggested_alternatives || [],
+                        accessories: predictionRes.accessories || [],
+                        packingList: []
                     }
                 };
             }
+
+            // If user provided a manual override, prefer it (trimmed)
+            const manualOverride = data?.manual_outfit_type?.trim();
+
+            const finalOutfitType = manualOverride || predictionRes.predicted_class || analysisRes.data.outfitType;
+
+            // Add a small note if override used
+            const finalReasons = Array.isArray(analysisRes.data.reasons) ? [...analysisRes.data.reasons] : (analysisRes.data.reasons || []);
+            if (manualOverride) finalReasons.unshift(`User override: ${manualOverride}`);
 
             setResult({
                 ...analysisRes.data,
                 // Ensure we use the robust values from the specific prediction endpoint
                 image_url: predictionRes.image_url || analysisRes.data.image_url,
-                image_id: predictionRes.id, // THE HOLY GRAIL ID
-                outfitType: predictionRes.predicted_class || analysisRes.data.outfitType,
-                outfitScore: (predictionRes.confidence * 100) || analysisRes.data.outfitScore
+                image_id: predictionRes.id || null,
+                outfitType: finalOutfitType,
+                outfitScore: (predictionRes.confidence * 100) || analysisRes.data.outfitScore,
+                occasion: data.occasion,
+                material: data.material,
+                reasons: finalReasons
             });
+            // Increment usage counter (local only). This helps show product usage during development.
+            try {
+                const prev = parseInt(localStorage.getItem('total_usage') || '0', 10) || 0;
+                const next = prev + 1;
+                localStorage.setItem('total_usage', String(next));
+                setTotalUsage(next);
+                console.debug('Total usage incremented to', next);
+            } catch (e) {
+                console.warn('Failed to update local usage counter', e);
+            }
         } catch (err) {
-            console.error(err);
-            setError('Failed to analyze outfit. Please try again.');
+            console.error("Analysis Error:", err);
+            const msg = err.response?.data?.detail
+                || err.message
+                || 'Failed to analyze outfit. Please check your connection.';
+            setError(msg);
         } finally {
             setLoading(false);
         }
@@ -92,7 +128,7 @@ export function PredictPage() {
                         transition={{ duration: 0.3 }}
                         className="w-full"
                     >
-                        <HeroSection onAnalyze={handleAnalyze} isLoading={loading} />
+                        <HeroSection onAnalyze={handleAnalyze} isLoading={loading} totalUsage={totalUsage} />
                     </motion.div>
                 ) : (
                     <motion.div

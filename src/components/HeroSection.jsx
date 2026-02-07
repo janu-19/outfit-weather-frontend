@@ -6,7 +6,7 @@ import { Button } from './ui/Button';
 import { clsx } from 'clsx';
 import axios from 'axios';
 
-export function HeroSection({ onAnalyze, isLoading }) {
+export function HeroSection({ onAnalyze, isLoading, totalUsage = 0 }) {
     const [dragActive, setDragActive] = useState(false);
     const [file, setFile] = useState(null);
     const [preview, setPreview] = useState(null);
@@ -67,33 +67,51 @@ export function HeroSection({ onAnalyze, isLoading }) {
         navigator.geolocation.getCurrentPosition(async (position) => {
             try {
                 const { latitude, longitude } = position.coords;
-                // Simple reverse geocoding using OpenStreetMap (Nominatim)
-                const response = await axios.get(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
-                const address = response.data.address;
-                const detectedCity = address.city || address.town || address.village || address.state_district;
+                // Reverse geocoding using OpenStreetMap (Nominatim)
+                const response = await axios.get(`https://nominatim.openstreetmap.org/reverse`, {
+                    params: { format: 'json', lat: latitude, lon: longitude, addressdetails: 1 }
+                });
+
+                const address = response.data?.address || {};
+
+                // Prefer city-like fields, then fallbacks
+                const detectedCity = (address.city || address.town || address.village || address.hamlet || address.county || address.state || address.region || '').trim();
 
                 if (detectedCity) {
-                    setCity(detectedCity);
+                    // Use display_name if city is generic; include country for better server matching
+                    const country = address.country ? `, ${address.country}` : '';
+                    setCity(`${detectedCity}${country}`);
+                } else if (response.data?.display_name) {
+                    // Last resort: use the display_name (may be verbose)
+                    setCity(response.data.display_name.split(',')[0]);
                 } else {
                     alert("Could not detect city name. Please enter manually.");
                 }
             } catch (error) {
                 console.error("Location error:", error);
-                alert("Failed to fetch location info.");
+                alert("Failed to fetch location info. Please enter city manually.");
             } finally {
                 setIsLocating(false);
             }
         }, (error) => {
             console.error("Geolocation error:", error);
             setIsLocating(false);
-            alert("Unable to retrieve your location.");
-        });
+            if (error.code === error.PERMISSION_DENIED) {
+                alert("Location permission denied. Please enter your city manually.");
+            } else {
+                alert("Unable to retrieve your location. Please enter your city manually.");
+            }
+        }, { timeout: 10000 });
     };
 
     const handleSubmit = (e) => {
         e.preventDefault();
         if (!file || !city) return;
-        onAnalyze({ file, city, occasion, material, manual_outfit_type: manualOutfitType });
+        const trimmedCity = city.trim();
+        // If reverse geocoder added country ("City, Country"), only send the city part to backend
+        const cityOnly = trimmedCity.split(',')[0].trim();
+        console.debug('Submitting with city:', cityOnly);
+        onAnalyze({ file, city: cityOnly, occasion, material, manual_outfit_type: manualOutfitType });
     };
 
     // Helper to focus input
@@ -111,6 +129,7 @@ export function HeroSection({ onAnalyze, isLoading }) {
                 <p className="text-slate-500">
                     Upload your outfit to get AI-powered styling advice
                 </p>
+                <p className="text-xs text-slate-400">Analyses run: <span className="font-medium text-slate-700">{totalUsage}</span></p>
             </div>
 
             <Card>
@@ -146,6 +165,14 @@ export function HeroSection({ onAnalyze, isLoading }) {
                                 <input type="file" className="hidden" accept="image/*" onChange={handleChange} />
                             </label>
                         )}
+                    </div>
+
+                    {/* Guest Privacy Notice */}
+                    <div className="text-center">
+                        <p className="text-xs text-slate-400 flex items-center justify-center gap-1">
+                            <Layers className="w-3 h-3" /> {/* reusing an icon or just text */}
+                            Guest images are processed temporarily and deleted automatically.
+                        </p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -206,15 +233,28 @@ export function HeroSection({ onAnalyze, isLoading }) {
                         </div>
                     </div>
 
-                    {/* Manual Outfit Type (Optional) */}
+                    {/* Manual Outfit Type (Optional) - Dropdown override */}
                     <div className="grid grid-cols-1">
-                        <input
-                            type="text"
-                            placeholder="Manually describe outfit (e.g. 'Blue Kurta')"
-                            value={manualOutfitType} // Fixed variable name
+                        <select
+                            value={manualOutfitType}
                             onChange={(e) => setManualOutfitType(e.target.value)}
-                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                        />
+                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all appearance-none bg-white"
+                        >
+                            <option value="">Select outfit type (use model prediction)</option>
+                            <option value="Shirt">Shirt</option>
+                            <option value="T-Shirt">T-Shirt</option>
+                            <option value="Kurta">Kurta</option>
+                            <option value="Saree">Saree</option>
+                            <option value="Dress">Dress</option>
+                            <option value="Jacket">Jacket</option>
+                            <option value="Coat">Coat</option>
+                            <option value="Pants">Pants / Trousers</option>
+                            <option value="Shorts">Shorts</option>
+                            <option value="Skirt">Skirt</option>
+                            <option value="Tunic">Tunic</option>
+                            <option value="Other">Other / Describe</option>
+                        </select>
+                        <p className="text-xs text-slate-400 mt-2">Select to override the model's predicted outfit type.</p>
                     </div>
 
                     <Button

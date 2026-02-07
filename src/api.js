@@ -26,40 +26,98 @@ api.interceptors.request.use(
     (error) => Promise.reject(error)
 );
 
-export const analyzeOutfit = async (formData) => {
-    const data = new FormData();
-    data.append('file', formData.file);
-    data.append('city', formData.city);
-    if (formData.occasion) {
-        data.append('occasion', formData.occasion);
-    }
-
+export const analyzeOutfit = async (predictionData, city, manualOverride) => {
     try {
-        const [weatherResponse, travelResponse] = await Promise.all([
-            api.post('/outfit-weather', data, {
-                params: {
-                    city: formData.city,
-                    occasion: formData.occasion,
-                    material: formData.material,
-                    manual_outfit_type: formData.manual_outfit_type // Added manual input support
-                },
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                },
-            }),
-            api.get('/travel-pack', {
-                params: { city: formData.city }
-            }).catch(err => {
-                console.warn("Travel pack fetch failed", err);
-                return { data: { suggested_clothes: [] } };
-            })
-        ]);
+        console.log("analyzeOutfit received:", predictionData); // Debug log
 
-        const resData = weatherResponse.data;
-        const travelData = travelResponse.data;
+        // We no longer call /outfit-weather as it doesn't exist.
+        // We use the data from predictOutfit (predictionData) and enrich it with /travel-pack
+
+        let travelData = { suggested_clothes: [], packing_recommendation: {} };
+        try {
+            if (city) {
+                const travelResponse = await api.get('/travel-pack', {
+                    params: { city: city }
+                });
+                travelData = travelResponse.data;
+            }
+        } catch (err) {
+            console.warn("Travel pack fetch failed", err);
+        }
+
+        // Map predictionData to the structure expected by our formatting logic
+        // predictionData comes from predictGuest/predictAuth
+        let weatherObj = predictionData.weather || predictionData.weather_summary || {};
+
+        // If a city was provided by the user, attempt to fetch current weather for that city
+        // This ensures frontend displays weather for the user's requested location rather than a backend default
+        if (city) {
+            try {
+                // Geocode the city to lat/lon using Nominatim
+                const geoResp = await axios.get('https://nominatim.openstreetmap.org/search', {
+                    params: { format: 'json', q: city, limit: 1 }
+                });
+                const place = geoResp.data && geoResp.data[0];
+                if (place && place.lat && place.lon) {
+                    const lat = place.lat;
+                    const lon = place.lon;
+
+                    // Fetch weather from Open-Meteo
+                    const weatherResp = await axios.get('https://api.open-meteo.com/v1/forecast', {
+                        params: {
+                            latitude: lat,
+                            longitude: lon,
+                            current_weather: true,
+                            daily: 'temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+                            timezone: 'auto'
+                        }
+                    });
+
+                    const w = weatherResp.data || {};
+                    const current = w.current_weather || {};
+                    const daily = w.daily || {};
+
+                    weatherObj = {
+                        city: city,
+                        temperature: typeof current.temperature !== 'undefined' ? current.temperature : (predictionData.weather?.temperature || 0),
+                        min_temp: Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min[0] : (predictionData.weather?.min_temp || 0),
+                        max_temp: Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max[0] : (predictionData.weather?.max_temp || 0),
+                        rain_prob: Array.isArray(daily.precipitation_probability_max) ? daily.precipitation_probability_max[0] : (predictionData.weather?.rain_prob || 0),
+                        humidity: predictionData.weather?.humidity || null,
+                        source: 'open-meteo'
+                    };
+                }
+            } catch (err) {
+                console.warn('Failed to fetch weather for city, using backend weather:', err);
+                // keep backend-provided weatherObj
+            }
+        }
+        console.log("Extracted weatherObj:", weatherObj); // Debug log
+
+        const finalOutfitType = (manualOverride && String(manualOverride).trim()) || predictionData.predicted_class || predictionData.class || "Unknown";
+
+        const resData = {
+            ...predictionData,
+            confidence: predictionData.confidence || 0,
+            outfit_type: finalOutfitType,
+            // Normalize weather fields
+            temperature: weatherObj.temperature || weatherObj.current_temp || 0,
+            rain_probability: weatherObj.rain_prob || weatherObj.daily_rain_prob || 0,
+            humidity: weatherObj.humidity || 'Normal',
+            weather_breakdown: weatherObj.breakdown || [],
+            // Verdict
+            outfit_verdict: weatherObj.verdict || predictionData.weather_verdict,
+            final_verdict: weatherObj.verdict || predictionData.weather_verdict,
+            // Lists
+            suggested_alternatives: predictionData.suggested_alternatives || [],
+            accessories: predictionData.accessories || [], // Model might return these
+            rain_advice: predictionData.rain_advice || [],
+            image_url: predictionData.image_url || predictionData.url
+        };
+        console.log("Processed resData:", resData); // Debug log
 
         // Logic for Confidence Bands
-        const conf = resData.confidence || 0;
+        const conf = resData.confidence;
         let confidenceLabel = 'Low Confidence';
         let confidenceColor = 'red';
 
@@ -77,53 +135,68 @@ export const analyzeOutfit = async (formData) => {
         // Logic for Explainability (Why?)
         const reasons = [];
         if (resData.outfit_verdict) reasons.push(resData.outfit_verdict);
-        if (resData.material_verdict) reasons.push(resData.material_verdict);
-        if (resData.material_reason) reasons.push(resData.material_reason);
 
-        if (reasons.length === 0) {
-            if (resData.temperature) reasons.push(`Temperature is ${resData.temperature}°C`);
-            if (resData.rain_probability < 20) reasons.push("No rain expected");
-            else if (resData.rain_probability > 50) reasons.push("Rain expected - waterproofs needed");
+        // Always add weather context if available
+        if (resData.temperature) {
+            if (resData.temperature > 25) reasons.push(`Great for today's warm weather (${resData.temperature}°C)`);
+            else if (resData.temperature < 15) reasons.push(`Suitable for cooler temps (${resData.temperature}°C)`);
+            else reasons.push(`Good match for today's temperature (${resData.temperature}°C)`);
+        }
+
+        if (resData.rain_probability > 50) {
+            reasons.push("Rain expected — water-resistant options recommended");
+        } else if (resData.rain_probability < 20) {
+            reasons.push("Clear skies expected");
         }
 
         // Fabric Tips
         let fabricTips = null;
-        if (resData.material_verdict) {
-            fabricTips = {
-                title: `Material Insight: ${resData.material || 'Selected Fabric'}`,
-                tip: resData.material_verdict
-            };
-        } else {
-            // Logic for Fabric Insights (Rule-based)
-            const outfitTypeLower = (resData.outfit_type || '').toLowerCase();
+        // Logic for Fabric Insights (Rule-based) since we might not get material_verdict
+        const outfitTypeLower = (resData.outfit_type || '').toLowerCase();
 
-            const FABRIC_RULES = {
-                'saree': { title: 'Saree Fabric Insight', tip: 'Cotton is best for >25°C. Silk is great for cool evenings.' },
-                'kurti': { title: 'Kurti Fabric Insight', tip: 'Breathable cotton blends recommended for daily wear.' },
-                'shirt': { title: 'Shirt Fabric Insight', tip: 'Linen is breathable for summer; Oxford cloth for cooler days.' },
-                't-shirt': { title: 'T-Shirt Insight', tip: '100% Cotton offers best breathability.' },
-                'jacket': { title: 'Layering Insight', tip: 'Ensure insulation layers are breathable.' },
-                // default fallback handled below
-            };
+        const FABRIC_RULES = {
+            'saree': { title: 'Saree Fabric Insight', tip: 'Cotton is best for >25°C. Silk is great for cool evenings.' },
+            'kurti': { title: 'Kurti Fabric Insight', tip: 'Breathable cotton blends recommended for daily wear.' },
+            'shirt': { title: 'Shirt Fabric Insight', tip: 'Linen is breathable for summer; Oxford cloth for cooler days.' },
+            't-shirt': { title: 'T-Shirt Insight', tip: '100% Cotton offers best breathability.' },
+            'jacket': { title: 'Layering Insight', tip: 'Ensure insulation layers are breathable.' },
+        };
 
-            if (outfitTypeLower && FABRIC_RULES[outfitTypeLower]) {
-                fabricTips = FABRIC_RULES[outfitTypeLower];
-            } else if (outfitTypeLower) {
-                fabricTips = { title: `${resData.outfit_type} Insight`, tip: 'Choose natural fibers for comfort in this weather.' };
-            }
+        if (outfitTypeLower && FABRIC_RULES[outfitTypeLower]) {
+            fabricTips = FABRIC_RULES[outfitTypeLower];
+        } else if (outfitTypeLower) {
+            fabricTips = { title: `${resData.outfit_type} Insight`, tip: 'Choose natural fibers for comfort in this weather.' };
+        }
+
+        // Accessories: Merge model predictions with travel pack suggestions if any
+        // If model didn't return accessories, we can try to guess or leave empty. 
+        // Currently relying on predictionData.accessories. 
+        // Note: The User mentioned "accessories list should me returned". If backend /predict/guest doesn't return it, we might need a fallback.
+        // Let's check travelData for accessories too.
+        let accessoriesList = (resData.accessories || []).map(item => ({
+            name: item,
+            icon: item
+        }));
+
+        if (accessoriesList.length === 0 && travelData.packing_recommendation?.accessories) {
+            accessoriesList = travelData.packing_recommendation.accessories.map(item => ({
+                name: item,
+                icon: item
+            }));
         }
 
         // Transform backend response to match frontend UI components
         return {
             data: {
                 outfitIncluded: true,
-                image_url: resData.image_url || resData.url, // Map image_url from backend response
+                image_url: resData.image_url,
+                image_id: predictionData.id || predictionData.image_id, // Ensure we pass ID if available
                 outfitType: resData.outfit_type,
                 outfitScore: Math.round(conf * 100),
-                confidenceLabel, // New field
-                confidenceColor, // New field
-                reasons, // New field for explainability
-                fabricTips, // New field
+                confidenceLabel,
+                confidenceColor,
+                reasons,
+                fabricTips,
                 weather: {
                     temp: resData.temperature,
                     condition: (resData.rain_probability > 50) ? 'Rainy' : 'Clear',
@@ -136,76 +209,128 @@ export const analyzeOutfit = async (formData) => {
                             `Humidity: ${resData.humidity || 'Normal'}`
                         ]
                 },
-                verdict: resData.final_verdict || resData.verdict || "Analysis Complete",
+                verdict: resData.final_verdict || "Analysis Complete",
                 verdictColor: (resData.final_verdict?.startsWith('✅') || conf > 0.5) ? 'green' : 'red',
                 suggestions: (resData.suggested_alternatives || []).filter(s => s && !s.toLowerCase().includes('not recommended') && !s.toLowerCase().includes('null')),
-                accessories: (resData.accessories || []).map(item => ({
-                    name: item,
-                    icon: item
-                })),
+                accessories: accessoriesList,
                 packingList: [
                     ...(resData.rain_advice || []).map(advice => ({
                         item: 'Weather Tip',
                         reason: `${advice} (Rain prob: ${resData.rain_probability || 0}%)`
                     })),
-                    ...(resData.travel_essentials || []).map(item => ({
-                        item: item,
-                        reason: "Travel Essential"
-                    })),
-                    // New structured packing recommendations
+                    // Use travelData for essentials
                     ...(travelData.packing_recommendation ?
-                        Object.entries(travelData.packing_recommendation).flatMap(([category, items]) =>
-                            items.map(item => ({
+                        Object.entries(travelData.packing_recommendation).flatMap(([category, items]) => {
+                            if (category === 'accessories') return []; // handled above
+                            return items.map(item => ({
                                 item: item,
                                 reason: category.charAt(0).toUpperCase() + category.slice(1)
-                            }))
-                        ) : []
+                            }));
+                        }) : []
                     ),
                     // Fallback for flat list
                     ...(travelData.suggested_clothes || []).map(item => ({
                         item: item,
-                        reason: `Recommended for ${travelData.city}: ${travelData.temperature}°C`
+                        reason: `Recommended for ${travelData.city || city}: ${travelData.temperature || resData.temperature}°C`
                     }))
                 ]
             }
         };
     } catch (error) {
-        console.error("API call failed:", error);
+        console.error("Analysis failed:", error);
         throw error;
     }
 };
 
 // New dedicated prediction endpoint
-export const predictOutfit = async (file) => {
+// New dedicated prediction endpoints
+// New dedicated prediction endpoints
+export const predictGuest = async (data) => {
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', data.file);
+    if (data.city) formData.append('city', data.city);
+    if (data.occasion) formData.append('occasion', data.occasion);
+    if (data.material) formData.append('material', data.material);
+    if (data.manual_outfit_type) formData.append('manual_outfit_type', data.manual_outfit_type);
 
     try {
-        console.log("Calling /predict-outfit...");
-        const response = await api.post('/predict-outfit', formData, {
+        console.log("Calling /predict/guest...", Object.fromEntries(formData));
+        // Guest endpoint returns prediction + advice immediately, no ID
+        const response = await api.post('/predict/guest', formData, {
             headers: { 'Content-Type': 'multipart/form-data' }
         });
-        console.log("Prediction success:", response.data);
-        // Expects: { id, predicted_class, confidence, image_url, ... }
         return response.data;
     } catch (error) {
-        console.error("Prediction failed:", error);
+        console.error("Guest prediction failed:", error);
         throw error;
+    }
+};
+
+export const predictAuth = async (data) => {
+    const formData = new FormData();
+    formData.append('file', data.file);
+    if (data.city) formData.append('city', data.city);
+    if (data.occasion) formData.append('occasion', data.occasion);
+    if (data.material) formData.append('material', data.material);
+    if (data.manual_outfit_type) formData.append('manual_outfit_type', data.manual_outfit_type);
+
+    try {
+        console.log("Calling /predict/auth...", Object.fromEntries(formData));
+        // Auth endpoint returns prediction + ID + saves to DB
+        const response = await api.post('/predict/auth', formData, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+                // Authorization header is added by interceptor if token exists
+            }
+        });
+        return response.data;
+    } catch (error) {
+        console.error("Auth prediction failed:", error);
+        throw error;
+    }
+};
+
+// Legacy support or alias if needed, but better to use specific ones
+export const predictOutfit = async (data) => {
+    // Check if data is just a file (legacy call style) or an object
+    // If it's a File object (legacy), wrap it. 
+    // BUT checking instance of File might be tricky across contexts, 
+    // better to assume new calls pass object { file, city... }
+    // If 'data' has a 'file' property, it's the object. If 'data' IS the file, we wrap it.
+
+    let payload = data;
+    if (data instanceof File || (data && !data.file)) {
+        // Fallback for any old calls passing just file
+        payload = { file: data };
+    }
+
+    const token = localStorage.getItem('token');
+    if (token) {
+        return predictAuth(payload);
+    } else {
+        return predictGuest(payload);
     }
 };
 
 
 export const submitFeedback = async (feedbackData) => {
     try {
-        // Backend expects VerifyRequest: { image_id: int, user_label: str }
-        // We map frontend data to this schema
+        // Unified /feedback endpoint
+        // Expects: { user_label, image_id (optional), weather_context (optional), model_output (optional) }
         const payload = {
-            image_id: feedbackData.image_id,
-            user_label: feedbackData.user_selected_category
+            user_label: feedbackData.user_selected_category,
+            // If we have an ID (auth user), send it
+            image_id: feedbackData.image_id || null,
+            // Send context to help training even if no ID
+            weather_context: feedbackData.weather_context || {},
+            model_output: {
+                predicted_category: feedbackData.model_predicted_category,
+                confidence: feedbackData.confidence
+            }
         };
 
-        console.log("Sending verification:", payload);
-        const response = await api.post('/verify-outfit', payload);
+        console.log("Sending feedback:", payload);
+        const response = await api.post('/feedback', payload);
         return response.data;
     } catch (error) {
         console.error("Feedback submission failed:", error);

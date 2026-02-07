@@ -22,11 +22,7 @@ function App() {
         <div className="relative z-10 pb-24"> {/* Added padding for floating navbar */}
           <Routes>
             <Route path="/" element={<HomePage />} />
-            <Route path="/predict" element={
-              <ProtectedRoute>
-                <PredictPage />
-              </ProtectedRoute>
-            } />
+            <Route path="/predict" element={<PredictPage />} />
             <Route path="/wardrobe" element={
               <ProtectedRoute>
                 <WardrobePage />

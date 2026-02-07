@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { authAPI } from '../../api';
+import { authAPI, wardrobeAPI } from '../../api';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Card';
 import { Mail, Lock, LogIn, AlertCircle } from 'lucide-react';
@@ -17,7 +17,23 @@ export function LoginPage() {
         setLoading(true);
         try {
             await authAPI.login(email, password);
-            toast.success("Welcome back! 👋");
+
+            // Check for pending guest outfit
+            const pendingOutfit = localStorage.getItem('pendingOutfit');
+            if (pendingOutfit) {
+                try {
+                    const outfitData = JSON.parse(pendingOutfit);
+                    await wardrobeAPI.saveOutfit(outfitData);
+                    localStorage.removeItem('pendingOutfit');
+                    toast.success("Welcome back! Saved your outfit to wardrobe. 🧥");
+                } catch (saveErr) {
+                    console.error("Failed to save pending outfit", saveErr);
+                    toast.success("Welcome back! (Couldn't save pending outfit)");
+                }
+            } else {
+                toast.success("Welcome back! 👋");
+            }
+
             navigate('/wardrobe');
         } catch (error) {
             console.error("Login failed", error);
