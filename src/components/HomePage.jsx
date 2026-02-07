@@ -1,8 +1,40 @@
 import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Shirt, Cloud, ArrowRight, ShieldCheck, Sparkles } from 'lucide-react';
+import { Shirt, Cloud, ArrowRight, ShieldCheck, Sparkles, Users, ServerCog } from 'lucide-react';
+import { getMetrics } from '../api';
 
 export function HomePage() {
+    const [metrics, setMetrics] = useState(null);
+    const [loadingMetrics, setLoadingMetrics] = useState(false);
+    const [metricsError, setMetricsError] = useState(null);
+
+    useEffect(() => {
+        let mounted = true;
+        async function load() {
+            setLoadingMetrics(true);
+            setMetricsError(null);
+            try {
+                const res = await getMetrics();
+                if (!mounted) return;
+                setMetrics(res);
+            } catch (err) {
+                if (!mounted) return;
+                // Gracefully hide metrics on 404 (endpoint not yet deployed)
+                // Only show error for other failures
+                if (err.response?.status === 404) {
+                    console.debug('Metrics endpoint not available (404)');
+                    setMetrics(null); // Don't show metrics section
+                } else {
+                    setMetricsError(err.message || 'Failed to load metrics');
+                }
+            } finally {
+                if (mounted) setLoadingMetrics(false);
+            }
+        }
+        load();
+        return () => { mounted = false; };
+    }, []);
     return (
         <div className="w-full min-h-[80vh] flex flex-col justify-center items-center">
             {/* Split Layout: Left Content, Right Actions */}
@@ -32,20 +64,48 @@ export function HomePage() {
                         Get smart recommendations, organize your wardrobe, and look your best without the guesswork.
                     </p>
 
-                    {/* Features Grid */}
-                    <div className="flex flex-wrap gap-4 pt-4">
-                        <Link to="/signup" className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center gap-3 hover:border-blue-200 transition-colors cursor-pointer group">
-                            <div className="p-2 bg-blue-50 rounded-lg text-blue-600 group-hover:bg-blue-100 transition-colors">
-                                <Cloud className="w-5 h-5" />
+                    {/* Features & Metrics Grid */}
+                    <div className="space-y-4 pt-4">
+                        {/* Feature Cards */}
+                        <div className="flex flex-wrap gap-4">
+                            <Link to="/signup" className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center gap-3 hover:border-blue-200 transition-colors cursor-pointer group">
+                                <div className="p-2 bg-blue-50 rounded-lg text-blue-600 group-hover:bg-blue-100 transition-colors">
+                                    <Cloud className="w-5 h-5" />
+                                </div>
+                                <span className="text-slate-700 font-medium">Weather Sync</span>
+                            </Link>
+                            <Link to="/wardrobe" className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center gap-3 hover:border-purple-200 transition-colors cursor-pointer group">
+                                <div className="p-2 bg-purple-50 rounded-lg text-purple-600 group-hover:bg-purple-100 transition-colors">
+                                    <Shirt className="w-5 h-5" />
+                                </div>
+                                <span className="text-slate-700 font-medium">Smart Wardrobe</span>
+                            </Link>
+                        </div>
+
+                        {/* Metrics Cards */}
+                        {!loadingMetrics && !metricsError && metrics && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-2xl shadow-sm border border-blue-200 flex items-center gap-3">
+                                    <div className="p-3 bg-blue-600 rounded-lg text-white">
+                                        <Users className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <div className="text-xs text-slate-600 font-medium">Total Users</div>
+                                        <div className="text-lg font-bold text-slate-800">{metrics.total_users || 0}</div>
+                                    </div>
+                                </div>
+
+                                <div className="p-4 bg-gradient-to-br from-green-50 to-green-100 rounded-2xl shadow-sm border border-green-200 flex items-center gap-3">
+                                    <div className="p-3 bg-green-600 rounded-lg text-white">
+                                        <ServerCog className="w-5 h-5" />
+                                    </div>
+                                    <div>
+                                        <div className="text-xs text-slate-600 font-medium">Total Predictions</div>
+                                        <div className="text-lg font-bold text-slate-800">{metrics.total_predictions || 0}</div>
+                                    </div>
+                                </div>
                             </div>
-                            <span className="text-slate-700 font-medium">Weather Sync</span>
-                        </Link>
-                        <Link to="/wardrobe" className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex items-center gap-3 hover:border-purple-200 transition-colors cursor-pointer group">
-                            <div className="p-2 bg-purple-50 rounded-lg text-purple-600 group-hover:bg-purple-100 transition-colors">
-                                <Shirt className="w-5 h-5" />
-                            </div>
-                            <span className="text-slate-700 font-medium">Smart Wardrobe</span>
-                        </Link>
+                        )}
                     </div>
                 </motion.div>
 

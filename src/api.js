@@ -522,3 +522,14 @@ export const authAPI = {
         return localStorage.getItem('token');
     }
 };
+
+// Fetch site metrics (read-only)
+export const getMetrics = async () => {
+    try {
+        const response = await api.get('/metrics');
+        return response.data;
+    } catch (error) {
+        console.error('Failed to fetch metrics:', error);
+        throw error;
+    }
+};
